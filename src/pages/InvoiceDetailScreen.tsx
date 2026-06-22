@@ -86,7 +86,7 @@ const InvoiceDetailScreen: React.FC = () => {
                 Object.keys(addedItemsDraft).forEach(itemId => {
                     const addQty = addedItemsDraft[itemId];
                     if (addQty > 0) {
-                        const menuItem = menuItems[itemId];
+                        const menuItem = menuItems?.[itemId];
                         if (!menuItem) return;
 
                         const existingPendingIndex = updatedPending.findIndex(i => i.menuItemId === itemId);
