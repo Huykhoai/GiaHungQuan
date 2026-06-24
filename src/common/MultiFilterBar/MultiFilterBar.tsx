@@ -169,15 +169,17 @@ const MultiFilterBar: React.FC<MultiFilterBarProps> = ({ categories, onFilterCha
                                         onKeyDown={handleOnKeyDown}
                                         renderInput={(params) => (
                                             <TextField
-                                                {...params}
-                                                InputProps={{
-                                                    ...params.InputProps,
-                                                    disableUnderline: true,
-                                                    style: {
-                                                        border: "none",
-                                                        background: "transparent",
-                                                        fontSize: 13,
-                                                        padding: 0
+                                                {...(params as any)}
+                                                slotProps={{
+                                                    input: {
+                                                        ...(params as any).InputProps,
+                                                        disableUnderline: true,
+                                                        style: {
+                                                            border: "none",
+                                                            background: "transparent",
+                                                            fontSize: 13,
+                                                            padding: 0
+                                                        }
                                                     }
                                                 }}
                                                 variant="standard"

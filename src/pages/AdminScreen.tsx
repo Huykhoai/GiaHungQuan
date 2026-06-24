@@ -13,6 +13,7 @@ import EditIcon from '@mui/icons-material/Edit';
 import DeleteIcon from '@mui/icons-material/Delete';
 import AssignmentIcon from '@mui/icons-material/Assignment';
 import MonetizationOnIcon from '@mui/icons-material/MonetizationOn';
+import ReceiptLongIcon from '@mui/icons-material/ReceiptLong';
 import axiosClient from '../config/axiosClient';
 import { useNotification } from '../ui/Notification/NotificationContext';
 import Loading from '@/ui/Loading/Loading';
@@ -100,7 +101,7 @@ const AdminScreen: React.FC = () => {
     const isLoading = loadingMenu || loadingTables || saveMutation.isPending || deleteMutation.isPending;
 
     return (
-        <Box sx={{ minHeight: 'cacl(100vh - 100px)', bgcolor: '#f1f5f9'}}>
+        <Box sx={{ minHeight: 'cacl(100vh - 100px)', bgcolor: '#f1f5f9' }}>
             <AppBar position="sticky" elevation={1} sx={{ top: 0, zIndex: 1100 }}>
                 <Toolbar sx={{ bgcolor: 'white', color: '#0f172a' }}>
                     <IconButton edge="start" color="inherit" onClick={() => navigate('/home')}>
@@ -109,6 +110,13 @@ const AdminScreen: React.FC = () => {
                     <Typography variant="h6" sx={{ flexGrow: 1, fontWeight: 'bold', textAlign: 'center' }}>
                         Quản Trị Hệ Thống
                     </Typography>
+                    <IconButton
+                        color="success"
+                        onClick={() => navigate('/revenue')}
+                        sx={{ bgcolor: '#d1fae5', ml: 1, '&:hover': { bgcolor: '#a7f3d0' } }}
+                    >
+                        <ReceiptLongIcon />
+                    </IconButton>
                 </Toolbar>
             </AppBar>
 

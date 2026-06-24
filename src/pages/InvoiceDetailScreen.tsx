@@ -12,6 +12,7 @@ import { useNotification } from '../ui/Notification/NotificationContext';
 import { formatPrice } from '@/utils/formatPrice';
 import { useWebSocket } from '../hooks/useWebSocket';
 import { Cancel, CheckCircle } from '@mui/icons-material';
+import DeleteIcon from '@mui/icons-material/Delete';
 import ConfirmDialog from '@/ui/ConfirmDialog/ConfirmDialog';
 
 const InvoiceDetailScreen: React.FC = () => {
@@ -31,6 +32,7 @@ const InvoiceDetailScreen: React.FC = () => {
     const [isOpenConfirm, setIsOpenConfirm] = useState(false);
     const [isOpenCancel, setIsOpenCancel] = useState(false);
     const [itemCancelId, setItemCancelId] = useState(null);
+    const [isOpenDelete, setIsOpenDelete] = useState(false);
     const [addedItemsDraft, setAddedItemsDraft] = useState<{ [itemId: string]: { quantity: number, note: string } }>({});
     const [expandedHistory, setExpandedHistory] = useState<{ [itemId: string]: boolean }>({});
 
@@ -52,6 +54,7 @@ const InvoiceDetailScreen: React.FC = () => {
     });
 
     const pendingItems = useMemo(() => invoiceItems?.filter((i: any) => i.status === 'PENDING') || [], [invoiceItems]);
+    const isPaid = useMemo(() => invoice?.status === 'PAID', [invoice]);
 
     const groupedServedItems = useMemo(() => {
         const served = invoiceItems?.filter((i: any) => i.status === 'SERVED') || [];
@@ -159,6 +162,20 @@ const InvoiceDetailScreen: React.FC = () => {
         onError: (err: any) => showNotification('error', 'Không thể thanh toán', err.response?.data?.message || 'Lỗi')
     });
 
+    const { mutateAsync: deleteInvoiceMutation, isPending: isDeletingInvoice } = useMutation({
+        mutationFn: async () => axiosClient.delete(`/api/invoices/${id}`),
+        onSuccess: (response: any) => {
+            const msg = response?.data?.message;
+            if (response?.data?.status === 400) {
+                showNotification('error', msg, 'Lỗi')
+                return;
+            }
+            showNotification('success', msg, 'Thành công');
+            navigate('/staff');
+        },
+        onError: (err: any) => showNotification('error', err.response?.data?.message || 'Lỗi', 'Không thể hủy bàn')
+    });
+
     if (loadingInv || loadingItems) return <Loading message="Đang tải hóa đơn..." />;
     if (!invoice) return <Box sx={{ p: 3, textAlign: "center" }}><Typography>Hóa đơn không tồn tại!</Typography></Box>;
 
@@ -175,6 +192,16 @@ const InvoiceDetailScreen: React.FC = () => {
                     <Typography variant="h6" component="div" sx={{ flexGrow: 1, fontWeight: 'bold', textAlign: 'right' }}>
                         {invoice.tableName}
                     </Typography>
+                    {invoiceItems?.length === 0 && (
+                        <IconButton
+                            color="error"
+                            onClick={() => setIsOpenDelete(true)}
+                            sx={{ ml: 1, bgcolor: '#fee2e2' }}
+                            disabled={isDeletingInvoice}
+                        >
+                            <DeleteIcon />
+                        </IconButton>
+                    )}
                 </Toolbar>
             </AppBar>
 
@@ -315,9 +342,9 @@ const InvoiceDetailScreen: React.FC = () => {
                         fullWidth
                         sx={{ py: 1.5, borderRadius: 3, fontWeight: 'bold', borderWidth: 2, '&:hover': { borderWidth: 2 } }}
                         onClick={() => setIsOpenConfirm(true)}
-                        disabled={pendingItems.length > 0 || isPaying}
+                        disabled={pendingItems.length > 0 || isPaying || isPaid}
                     >
-                        {pendingItems.length > 0 ? "BÀN CHƯA LÊN ĐỦ ĐỒ - KHÔNG THỂ CHỐT" : "THU NGÂN CHỐT HÓA ĐƠN ĐỂ IN"}
+                        {pendingItems.length > 0 ? "BÀN CHƯA LÊN ĐỦ ĐỒ - KHÔNG THỂ CHỐT" : "Thanh toán"}
                     </Button>
                 </Box>
             </Box>
@@ -403,7 +430,23 @@ const InvoiceDetailScreen: React.FC = () => {
                     setIsOpenConfirm(false);
                 }}
                 title="Xác nhận thanh toán"
-                content='Chắc chắn thu tiền bàn này và kết thúc phiên?'
+                content={
+                    <Box sx={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 2 }}>
+                        <Typography sx={{ fontWeight: 800, fontSize: '1.8rem', color: '#16a34a' }}>
+                            {formatPrice(totalInvoiceMoney)}
+                        </Typography>
+                        <Box
+                            component="img"
+                            src={`https://img.vietqr.io/image/MB-0382587309-compact.png?amount=${totalInvoiceMoney}&addInfo=${encodeURIComponent(`Thanh toan ${invoice.tableName} - Gia Hung Quan`)}&accountName=${encodeURIComponent('NGUYEN VAN A')}`}
+                            alt="QR Thanh toán"
+                            sx={{ width: 220, height: 220, borderRadius: 2, border: '2px solid #e2e8f0' }}
+                        />
+                        <Typography sx={{ fontSize: '0.85rem', color: '#64748b', textAlign: 'center' }}>
+                            Quét mã QR bằng app Ngân hàng để thanh toán
+                        </Typography>
+                    </Box>
+                }
+                confirmText="ĐÃ NHẬN TIỀN"
                 type="success"
             />
             <ConfirmDialog
@@ -415,6 +458,17 @@ const InvoiceDetailScreen: React.FC = () => {
                 }}
                 title="Xác nhận"
                 content='Khách đổi ý, bạn chắc chắn muốn hủy món này?'
+                type="success"
+            />
+            <ConfirmDialog
+                open={isOpenDelete}
+                onClose={() => setIsOpenDelete(false)}
+                onConfirm={() => {
+                    deleteInvoiceMutation();
+                    setIsOpenDelete(false);
+                }}
+                title="Xác nhận"
+                content='Bạn có chắc chắn muốn xóa hóa đơn này?'
                 type="success"
             />
         </Box>
