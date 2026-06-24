@@ -1,3 +1,7 @@
+export interface User {
+    username: string;
+}
+
 export interface TableData {
     id?: string;
     name: string;

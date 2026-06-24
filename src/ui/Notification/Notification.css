@@ -1,0 +1,171 @@
+:root {
+    --notification-success: #10b981;
+    --notification-error: #ef4444;
+    --notification-warning: #f59e0b;
+    --notification-info: #3b82f6;
+}
+
+.notification-container {
+    position: fixed;
+    top: 24px;
+    right: 24px;
+    z-index: 1999;
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    pointer-events: none;
+}
+
+.notification-item {
+    pointer-events: auto;
+    min-width: 320px;
+    max-width: 420px;
+    background: rgba(255, 255, 255, 0.85);
+    backdrop-filter: blur(12px);
+    -webkit-backdrop-filter: blur(12px);
+    border-radius: 12px;
+    border: 1px solid rgba(255, 255, 255, 0.3);
+    box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.1), 0 4px 6px -2px rgba(0, 0, 0, 0.05);
+    padding: 16px;
+    display: flex;
+    align-items: flex-start;
+    gap: 12px;
+    overflow: hidden;
+    position: relative;
+    animation: slideIn 0.4s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+    transition: all 0.3s ease;
+}
+
+.notification-item.exit {
+    animation: slideOut 0.3s ease forwards;
+}
+
+.notification-icon {
+    flex-shrink: 0;
+    width: 24px;
+    height: 24px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.notification-content {
+    flex-grow: 1;
+}
+
+.notification-title {
+    font-weight: 700;
+    font-size: 0.95rem;
+    color: #1e293b;
+    margin-bottom: 2px;
+}
+
+.notification-message {
+    font-size: 0.875rem;
+    color: #64748b;
+    line-height: 1.5;
+}
+
+.notification-close {
+    flex-shrink: 0;
+    cursor: pointer;
+    color: #94a3b8;
+    transition: color 0.2s;
+    background: transparent;
+    border: none;
+    padding: 2px;
+    display: flex;
+}
+
+.notification-close:hover {
+    color: #475569;
+}
+
+/* Các loại thông báo */
+.notification-item.success {
+    border-left: 4px solid var(--notification-success);
+}
+
+.notification-item.error {
+    border-left: 4px solid var(--notification-error);
+}
+
+.notification-item.warning {
+    border-left: 4px solid var(--notification-warning);
+}
+
+.notification-item.info {
+    border-left: 4px solid var(--notification-info);
+}
+
+.notification-item.success .notification-icon {
+    color: var(--notification-success);
+}
+
+.notification-item.error .notification-icon {
+    color: var(--notification-error);
+}
+
+.notification-item.warning .notification-icon {
+    color: var(--notification-warning);
+}
+
+.notification-item.info .notification-icon {
+    color: var(--notification-info);
+}
+
+/* Thanh Progress Bar đếm ngược */
+.notification-progress {
+    position: absolute;
+    bottom: 0;
+    left: 0;
+    height: 3px;
+    background: rgba(0, 0, 0, 0.05);
+    width: 100%;
+}
+
+.notification-progress-bar {
+    height: 100%;
+    width: 100%;
+    transform-origin: left;
+}
+
+.success .notification-progress-bar {
+    background: var(--notification-success);
+}
+
+.error .notification-progress-bar {
+    background: var(--notification-error);
+}
+
+.warning .notification-progress-bar {
+    background: var(--notification-warning);
+}
+
+.info .notification-progress-bar {
+    background: var(--notification-info);
+}
+
+@keyframes slideIn {
+    from {
+        transform: translateX(100%);
+        opacity: 0;
+    }
+
+    to {
+        transform: translateX(0);
+        opacity: 1;
+    }
+}
+
+@keyframes slideOut {
+    from {
+        transform: translateX(0);
+        opacity: 1;
+    }
+
+    to {
+        transform: translateX(100%);
+        opacity: 0;
+    }
+}

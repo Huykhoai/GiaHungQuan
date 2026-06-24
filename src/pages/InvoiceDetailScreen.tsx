@@ -1,64 +1,103 @@
 import React, { useState, useMemo } from 'react';
-import { collection, getDocs, doc, runTransaction, getDoc } from 'firebase/firestore';
-import { db } from '../config/firebaseConfig';
-import type { MenuItemData, OrderItem, InvoiceData } from '../types';
 import { useParams, useNavigate } from 'react-router-dom';
-import { useQuery, useMutation } from '@tanstack/react-query';
-import Loading from '@/ui/Loading/Loading';
+import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import {
     AppBar, Toolbar, Typography, Card, CardContent, Button,
-    Dialog, DialogContent, Box
+    Dialog, DialogContent, Box, IconButton, TextField
 } from '@mui/material';
+import ArrowBackIosNewIcon from '@mui/icons-material/ArrowBackIosNew';
+import axiosClient from '../config/axiosClient';
+import Loading from '@/ui/Loading/Loading';
+import { useNotification } from '../ui/Notification/NotificationContext';
+import { formatPrice } from '@/utils/formatPrice';
+import { useWebSocket } from '../hooks/useWebSocket';
+import { Cancel, CheckCircle } from '@mui/icons-material';
+import ConfirmDialog from '@/ui/ConfirmDialog/ConfirmDialog';
 
 const InvoiceDetailScreen: React.FC = () => {
     const { id } = useParams<{ id: string }>();
     const navigate = useNavigate();
+    const queryClient = useQueryClient();
+    const { showNotification } = useNotification();
+
+    useWebSocket(`/topic/invoice/${id}`, (message) => {
+        if (message === 'UPDATED') {
+            queryClient.invalidateQueries({ queryKey: ['invoiceItems', id] });
+            queryClient.invalidateQueries({ queryKey: ['invoice', id] });
+        }
+    });
 
     const [isMenuDialogOpen, setIsMenuDialogOpen] = useState(false);
-    // Lưu các món mới được thêm (chưa update lên DB)
-    const [addedItemsDraft, setAddedItemsDraft] = useState<{ [itemId: string]: number }>({});
+    const [isOpenConfirm, setIsOpenConfirm] = useState(false);
+    const [isOpenCancel, setIsOpenCancel] = useState(false);
+    const [itemCancelId, setItemCancelId] = useState(null);
+    const [addedItemsDraft, setAddedItemsDraft] = useState<{ [itemId: string]: { quantity: number, note: string } }>({});
     const [expandedHistory, setExpandedHistory] = useState<{ [itemId: string]: boolean }>({});
+
     const toggleHistory = (itemId: string) => setExpandedHistory(p => ({ ...p, [itemId]: !p[itemId] }));
 
-    // === QUERIES ===
-    const { data: invoice, isLoading: isLoadingInv, refetch: refetchInv } = useQuery({
+    const { data: invoice, isLoading: loadingInv, refetch: refetchInv } = useQuery({
         queryKey: ['invoice', id],
-        queryFn: async () => {
-            if (!id) return null;
-            const snap = await getDoc(doc(db, 'invoices', id));
-            if (!snap.exists()) return null;
-            return { id: snap.id, ...snap.data() } as InvoiceData;
-        }
+        queryFn: async () => (await axiosClient.get(`/api/invoices/${id}`)).data
     });
 
-    const { data: menuItems, isLoading: isLoadingMenu } = useQuery({
+    const { data: invoiceItems, isLoading: loadingItems, refetch: refetchItems } = useQuery({
+        queryKey: ['invoiceItems', id],
+        queryFn: async () => (await axiosClient.get(`/api/invoices/${id}/items`)).data
+    });
+
+    const { data: menuList, isLoading: loadingMenu } = useQuery({
         queryKey: ['menuItems'],
-        queryFn: async () => {
-            const snap = await getDocs(collection(db, 'menuItems'));
-            const menuItem: Record<string, MenuItemData> = {};
-            snap.docs.forEach(d => {
-                menuItem[d.id] = { id: d.id, ...d.data() } as MenuItemData;
-            });
-            return menuItem;
-        }
+        queryFn: async () => (await axiosClient.get(`/api/menu-items`)).data
     });
 
-    // === THÊM MÓN TRONG DIALOG ===
-    const handleAddQty = (itemId: string, delta: number) => {
+    const pendingItems = useMemo(() => invoiceItems?.filter((i: any) => i.status === 'PENDING') || [], [invoiceItems]);
+
+    const groupedServedItems = useMemo(() => {
+        const served = invoiceItems?.filter((i: any) => i.status === 'SERVED') || [];
+        const groups: Record<number, any> = {};
+        served.forEach((item: any) => {
+            if (!groups[item.menuItemId]) {
+                groups[item.menuItemId] = {
+                    menuItemId: item.menuItemId,
+                    name: item.name,
+                    price: item.price,
+                    totalQuantity: 0,
+                    history: []
+                };
+            }
+            groups[item.menuItemId].totalQuantity += item.quantity;
+            groups[item.menuItemId].history.push({
+                quantity: item.quantity,
+                timestamp: item.updatedAt,
+                note: item.note
+            });
+        });
+        return Object.values(groups);
+    }, [invoiceItems]);
+
+    const handleAddQty = (itemId: string | number, delta: number) => {
         setAddedItemsDraft(prev => {
-            const currentQty = prev[itemId] || 0;
-            const newQty = Math.max(0, currentQty + delta);
-            return { ...prev, [itemId]: newQty };
+            const currentItem = prev[itemId] || { quantity: 0, note: '' };
+            const newQty = Math.max(0, currentItem.quantity + delta);
+            return { ...prev, [itemId]: { ...currentItem, quantity: newQty } };
+        });
+    };
+
+    const handleNoteChange = (itemId: string | number, note: string) => {
+        setAddedItemsDraft(prev => {
+            const currentItem = prev[itemId] || { quantity: 0, note: '' };
+            return { ...prev, [itemId]: { ...currentItem, note } };
         });
     };
 
     const { draftTotalAmount, draftTotalCount } = useMemo(() => {
         let amt = 0, count = 0;
-        if (menuItems) {
+        if (menuList) {
             Object.keys(addedItemsDraft).forEach(key => {
-                const qty = addedItemsDraft[key];
+                const qty = addedItemsDraft[key]?.quantity || 0;
                 if (qty > 0) {
-                    const itemRef = menuItems[key];
+                    const itemRef = menuList.find((m: any) => m.id.toString() === key);
                     if (itemRef) {
                         amt += itemRef.price * qty;
                         count += qty;
@@ -67,114 +106,71 @@ const InvoiceDetailScreen: React.FC = () => {
             });
         }
         return { draftTotalAmount: amt, draftTotalCount: count };
-    }, [addedItemsDraft, menuItems]);
+    }, [addedItemsDraft, menuList]);
 
-    // LƯU CÁC MÓN GỌI THÊM VÀO DB
-    const { mutateAsync: saveOrder, isPending: isSaving } = useMutation({
+    const { mutateAsync: orderMutation, isPending: isOrdering } = useMutation({
         mutationFn: async () => {
-            if (!invoice || draftTotalCount === 0) return;
-            const invoiceRef = doc(db, 'invoices', invoice.id!);
+            const payloadItems = Object.keys(addedItemsDraft)
+                .filter(k => addedItemsDraft[k]?.quantity > 0)
+                .map(k => ({
+                    menuItemId: Number(k),
+                    quantity: addedItemsDraft[k].quantity,
+                    note: addedItemsDraft[k].note
+                }));
 
-            await runTransaction(db, async (t) => {
-                const sfDoc = await t.get(invoiceRef);
-                if (!sfDoc.exists()) throw "Hóa đơn không còn tồn tại!";
-
-                const existingData = sfDoc.data() as InvoiceData;
-                const updatedPending: OrderItem[] = existingData.pendingItems ? [...existingData.pendingItems] : [];
-
-                // Gộp các món mới gọi vào danh sách chờ
-                Object.keys(addedItemsDraft).forEach(itemId => {
-                    const addQty = addedItemsDraft[itemId];
-                    if (addQty > 0) {
-                        const menuItem = menuItems?.[itemId];
-                        if (!menuItem) return;
-
-                        const existingPendingIndex = updatedPending.findIndex(i => i.menuItemId === itemId);
-                        if (existingPendingIndex > -1) {
-                            updatedPending[existingPendingIndex].quantity += addQty;
-                        } else {
-                            updatedPending.push({
-                                menuItemId: itemId,
-                                name: menuItem.name,
-                                price: menuItem.price,
-                                quantity: addQty
-                            });
-                        }
-                    }
-                });
-
-                t.update(invoiceRef, {
-                    pendingItems: updatedPending,
-                    updatedAt: Date.now()
-                });
-            });
+            return axiosClient.post(`/api/invoices/${id}/order`, { items: payloadItems });
         },
         onSuccess: () => {
+            showNotification('success', 'Thành công', 'Đã lưu món vào danh sách chờ!');
             setIsMenuDialogOpen(false);
-            setAddedItemsDraft({}); // Clear the draft
-            refetchInv(); // Tải lại chi tiết update
-        }
-    });
-
-    const { mutateAsync: markAsServed, isPending: isServingItem } = useMutation({
-        mutationFn: async (itemIdToServe: string) => {
-            if (!invoice) return;
-            const invoiceRef = doc(db, 'invoices', invoice.id!);
-
-            await runTransaction(db, async (t) => {
-                const sfDoc = await t.get(invoiceRef);
-                if (!sfDoc.exists()) throw "Hóa đơn mất tích!";
-
-                const data = sfDoc.data() as InvoiceData;
-                const pending = data.pendingItems ? [...data.pendingItems] : [];
-                const served = [...data.items];
-
-                const pendingItemIndex = pending.findIndex(i => i.menuItemId === itemIdToServe);
-                if (pendingItemIndex === -1) return;
-
-                const itemServing = pending[pendingItemIndex];
-                const ts = Date.now();
-
-                // Remove from pending
-                pending.splice(pendingItemIndex, 1);
-
-                // Add to served
-                const existingServedIndex = served.findIndex(i => i.menuItemId === itemServing.menuItemId);
-                if (existingServedIndex > -1) {
-                    served[existingServedIndex].quantity += itemServing.quantity;
-                    if (!served[existingServedIndex].history) {
-                        served[existingServedIndex].history = [{ quantity: served[existingServedIndex].quantity - itemServing.quantity, timestamp: data.createdAt }];
-                    }
-                    served[existingServedIndex].history.push({ quantity: itemServing.quantity, timestamp: ts });
-                } else {
-                    itemServing.history = [{ quantity: itemServing.quantity, timestamp: ts }];
-                    served.push(itemServing);
-                }
-
-                t.update(invoiceRef, {
-                    items: served,
-                    pendingItems: pending,
-                    updatedAt: Date.now()
-                });
-            });
+            setAddedItemsDraft({});
+            refetchItems();
         },
-        onSuccess: () => refetchInv()
+        onError: (err: any) => showNotification('error', err.response?.data?.message || 'Không thể gọi món', 'Lỗi')
     });
 
-    if (isLoadingInv) return <Loading message="Đang tải hóa đơn..." />;
+    const { mutateAsync: serveMutation, isPending: isServing } = useMutation({
+        mutationFn: async (itemId: number) => axiosClient.put(`/api/invoices/items/${itemId}/serve`),
+        onSuccess: (response: any) => {
+            const invoiceItem = response.data;
+            refetchInv();
+            refetchItems();
+            showNotification('success', 'Đã bê món ' + invoiceItem.name + ' ra!', 'Thành công');
+        },
+        onError: (err: any) => showNotification('error', err.response?.data?.message || 'Không thể bê món', 'Lỗi')
+    });
+
+    const { mutateAsync: cancelMutation, isPending: isCancelling } = useMutation({
+        mutationFn: async (itemId: number) => axiosClient.delete(`/api/invoices/items/${itemId}`),
+        onSuccess: () => {
+            showNotification('success', 'Đã hủy món ăn', 'Thành công');
+            refetchItems();
+            refetchInv();
+        },
+        onError: (err: any) => showNotification('error', err.response?.data?.message || 'Không thể hủy món', 'Lỗi')
+    });
+
+    const { mutateAsync: payMutation, isPending: isPaying } = useMutation({
+        mutationFn: async () => axiosClient.post(`/api/invoices/${id}/pay`),
+        onSuccess: () => {
+            showNotification('success', 'Hoàn tất', 'Hóa đơn đã được thanh toán!');
+            navigate('/staff');
+        },
+        onError: (err: any) => showNotification('error', 'Không thể thanh toán', err.response?.data?.message || 'Lỗi')
+    });
+
+    if (loadingInv || loadingItems) return <Loading message="Đang tải hóa đơn..." />;
     if (!invoice) return <Box sx={{ p: 3, textAlign: "center" }}><Typography>Hóa đơn không tồn tại!</Typography></Box>;
 
-    const pendingMoney = invoice.pendingItems?.reduce((sum, item) => sum + (item.price * item.quantity), 0) || 0;
-    const servedMoney = invoice.items.reduce((sum, item) => sum + (item.price * item.quantity), 0);
-    const totalInvoiceMoney = servedMoney;
+    const totalInvoiceMoney = invoice.totalAmount || 0;
+    const pendingMoney = pendingItems.reduce((sum: number, item: any) => sum + (item.price * item.quantity), 0);
 
     return (
-        <Box sx={{ minHeight: '100vh', backgroundColor: '#f1f5f9', pb: 10 }}>
-            {/* Header Màn Chi Tiết Hóa Đơn */}
-            <AppBar position="sticky" elevation={1}>
-                <Toolbar sx={{ backgroundColor: 'white', color: 'black' }}>
-                    <Button color="inherit" onClick={() => navigate('/staff')} sx={{ minWidth: 0, mr: 1, p: 0, fontWeight: 'bold', color: '#1976d2' }}>
-                        {'<'} Bàn
+        <Box sx={{ minHeight: 'calc(100vh - 100px)', backgroundColor: '#f1f5f9' }}>
+            <AppBar position="sticky" elevation={1} sx={{ top: 0, zIndex: 1100 }}>
+                <Toolbar sx={{ backgroundColor: 'white', color: '#0f172a' }}>
+                    <Button color="inherit" onClick={() => navigate('/staff')} sx={{ minWidth: 0, mr: 1, p: 0, fontWeight: 'bold', color: '#2563eb' }}>
+                        <ArrowBackIosNewIcon sx={{ fontSize: 18, mr: 0.5 }} /> Bàn
                     </Button>
                     <Typography variant="h6" component="div" sx={{ flexGrow: 1, fontWeight: 'bold', textAlign: 'right' }}>
                         {invoice.tableName}
@@ -182,57 +178,67 @@ const InvoiceDetailScreen: React.FC = () => {
                 </Toolbar>
             </AppBar>
 
-            {/* Thông Tin Chung Hóa Đơn */}
             <Box sx={{ px: 2, py: 3 }}>
-                {(isServingItem || isSaving) && <Loading fullPage message="Đang lưu..." />}
+                {(isServing || isPaying || isOrdering || isCancelling) && <Loading fullPage message="Đang xử lý..." />}
+
                 <Card sx={{ borderRadius: 3, mb: 3, background: 'linear-gradient(135deg, #1e293b 0%, #0f172a 100%)', color: 'white' }}>
                     <CardContent>
                         <Typography variant="subtitle2" sx={{ opacity: 0.8 }}>TỔNG THANH TOÁN (ĐÃ PHỤC VỤ)</Typography>
-                        <Typography sx={{ fontSize: "24px", fontWeight: "bold", mt: 0.5 }} variant="h6" >{totalInvoiceMoney.toLocaleString()} đ</Typography>
+                        <Typography sx={{ fontSize: "28px", fontWeight: "bold", mt: 0.5 }} variant="h5" >
+                            {formatPrice(totalInvoiceMoney)}
+                        </Typography>
                         {pendingMoney > 0 && (
                             <Typography variant="body2" sx={{ color: '#fbbf24', mt: 0.5, fontStyle: 'italic' }}>
-                                (Đang làm/Chờ bê ra: {pendingMoney.toLocaleString()} đ)
+                                (Đang làm/Chờ bê ra: {formatPrice(pendingMoney)})
                             </Typography>
                         )}
                     </CardContent>
                 </Card>
 
-                {/* NÚT THÊM MÓN */}
                 <Button
-                    variant="contained"
-                    fullWidth
-                    size="large"
+                    variant="contained" fullWidth size="large"
                     sx={{ borderRadius: 3, py: 1.5, mb: 3, fontWeight: 'bold', fontSize: '16px' }}
                     onClick={() => setIsMenuDialogOpen(true)}
                 >
                     + GỌI THÊM MÓN
                 </Button>
 
-                {/* DANH SÁCH MÓN ĐANG LÀM / CHỜ PHỤC VỤ (Pending Items) */}
-                {invoice.pendingItems && invoice.pendingItems.length > 0 && (
+                {pendingItems.length > 0 && (
                     <Box sx={{ mb: 4 }}>
-                        <Typography sx={{ fontSize: "20px", fontWeight: "bold", mb: 1.5, color: "#d97706" }} variant="subtitle1" >
+                        <Typography sx={{ fontSize: "16px", fontWeight: 800, mb: 1.5, color: "#d97706", display: 'flex', alignItems: 'center' }}>
                             ⌛ MÓN ĐANG LÀM / CHỜ BÊ RA:
                         </Typography>
-                        {invoice.pendingItems.map((item, index) => (
-                            <Card key={`pending-${index}`} sx={{ mb: 1.5, borderRadius: 3, border: '2px solid #fcd34d', backgroundColor: '#fffbeb' }}>
+                        {pendingItems.map((item: any) => (
+                            <Card key={item.id} sx={{ mb: 1.5, borderRadius: 3, border: '2px solid #fcd34d', backgroundColor: '#fffbeb' }}>
                                 <CardContent sx={{ p: 2, '&:last-child': { pb: 2 }, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                                     <Box>
-                                        <Typography sx={{ fontWeight: "bold", fontSize: "16px", color: '#b45309' }} >{item.name}</Typography>
-                                        <Typography sx={{ fontWeight: "bold", fontSize: "16px", color: '#b45309', mt: 0.5 }}>
-                                            Số lượng: x {item.quantity}
+                                        <Typography sx={{ fontWeight: 800, fontSize: "16px", color: '#b45309' }}>{item.name}</Typography>
+                                        <Typography sx={{ fontWeight: 600, fontSize: "15px", color: '#b45309', mt: 0.5 }}>
+                                            Số lượng: x <span style={{ fontSize: '18px' }}>{item.quantity}</span>
                                         </Typography>
+                                        {item.note && (
+                                            <Typography sx={{ fontStyle: 'italic', fontSize: "13px", color: '#d97706', mt: 0.5 }}>
+                                                * LƯU Ý: {item.note}
+                                            </Typography>
+                                        )}
                                     </Box>
-                                    <Box>
-                                        <Button
-                                            variant="contained"
-                                            color="success"
-                                            sx={{ fontWeight: 'bold' }}
-                                            onClick={() => markAsServed(item.menuItemId)}
-                                            disabled={isServingItem}
+                                    <Box sx={{ display: 'flex', gap: 1 }}>
+                                        <IconButton
+                                            sx={{ border: '1px solid #22c55e' }}
+                                            onClick={() => serveMutation(item.id)} disabled={isServing}
                                         >
-                                            ✅ ĐÃ BÊ RA
-                                        </Button>
+                                            <CheckCircle fontSize='small' color='success' />
+                                        </IconButton>
+                                        <IconButton
+                                            sx={{ border: '1px solid #ef4444' }}
+                                            onClick={() => {
+                                                setItemCancelId(item.id);
+                                                setIsOpenCancel(true);
+                                            }}
+                                            disabled={isCancelling}
+                                        >
+                                            <Cancel fontSize='small' color='error' />
+                                        </IconButton>
                                     </Box>
                                 </CardContent>
                             </Card>
@@ -240,53 +246,58 @@ const InvoiceDetailScreen: React.FC = () => {
                     </Box>
                 )}
 
-                {/* DANH SÁCH MÓN ĐÃ ĐƯA LÊN CHO KHÁCH (Served Items) */}
-                <Typography sx={{ fontSize: "20px", fontWeight: "bold", mt: 0.5, mb: 1.5, color: "text.secondary" }} variant="subtitle1" >
+                <Typography sx={{ fontSize: "16px", fontWeight: 800, mt: 0.5, mb: 1.5, color: "text.secondary" }}>
                     ✅ CÁC MÓN ĐÃ PHỤC VỤ:
                 </Typography>
 
-                {invoice.items.length === 0 && (!invoice.pendingItems || invoice.pendingItems.length === 0) && (
-                    <Typography sx={{ fontSize: "18px", fontWeight: "bold", mt: 0.5, mb: 2, color: "text.secondary", textAlign: "center" }} >Bàn này chưa gọi món nào.</Typography>
+                {groupedServedItems.length === 0 && pendingItems.length === 0 && (
+                    <Typography sx={{ fontSize: "15px", fontWeight: "bold", mt: 0.5, mb: 2, color: "text.secondary", textAlign: "center" }} >
+                        Bàn này chưa gọi món nào.
+                    </Typography>
                 )}
 
-                {invoice.items.map((item, index) => (
-                    <Card key={index} sx={{ mb: 1.5, borderRadius: 3 }}>
+                {groupedServedItems.map((group: any) => (
+                    <Card key={group.menuItemId} sx={{ mb: 1.5, borderRadius: 3, border: '1px solid #e2e8f0', boxShadow: 'none' }}>
                         <CardContent sx={{ p: 2, '&:last-child': { pb: 2 } }}>
                             <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                                 <Box>
-                                    <Typography sx={{ fontWeight: "bold", fontSize: "16px" }} >{item.name}</Typography>
-                                    <Typography sx={{ fontWeight: "bold", fontSize: "14px", color: "text.secondary" }} >
-                                        Đơn giá: {item.price.toLocaleString()} đ
+                                    <Typography sx={{ fontWeight: 800, fontSize: "16px" }}>{group.name}</Typography>
+                                    <Typography sx={{ fontWeight: 600, fontSize: "14px", color: "text.secondary" }}>
+                                        Đơn giá: {group.price.toLocaleString()} đ
                                     </Typography>
                                 </Box>
                                 <Box sx={{ textAlign: "right" }}>
-                                    <Typography sx={{ fontWeight: "bold", fontSize: "18px", color: "primary.main" }}>
-                                        x {item.quantity}
+                                    <Typography sx={{ fontWeight: 900, fontSize: "18px", color: "#2563eb" }}>
+                                        x {group.totalQuantity}
                                     </Typography>
-                                    <Typography sx={{ color: "error.main", fontWeight: "bold", fontSize: "15px" }}>
-                                        {(item.price * item.quantity).toLocaleString()} đ
+                                    <Typography sx={{ color: "#ef4444", fontWeight: 800, fontSize: "15px" }}>
+                                        {(group.price * group.totalQuantity).toLocaleString()} đ
                                     </Typography>
                                 </Box>
                             </Box>
 
-                            {/* HIỂN THỊ LỊCH SỬ GỌI MÓN */}
-                            {item.history && item.history.length > 0 && (
+                            {group.history.length > 0 && (
                                 <Box sx={{ mt: 1.5, pt: 1.5, borderTop: '1px dashed #cbd5e1' }}>
                                     <Box
                                         sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', cursor: 'pointer' }}
-                                        onClick={() => toggleHistory(item.menuItemId)}
+                                        onClick={() => toggleHistory(group.menuItemId?.toString())}
                                     >
-                                        <Typography variant="body2" sx={{ color: "text.secondary", fontWeight: "bold" }}>Lịch sử gọi món</Typography>
-                                        <Typography variant="body2" sx={{ color: "primary.main" }}>{expandedHistory[item.menuItemId] ? 'Thu gọn ▲' : 'Xem chi tiết ▼'}</Typography>
+                                        <Typography variant="body2" sx={{ color: "text.secondary", fontWeight: 600 }}>Chi tiết lịch sử bưng bê</Typography>
+                                        <Typography variant="body2" sx={{ color: "#2563eb", fontWeight: 'bold' }}>
+                                            {expandedHistory[group.menuItemId?.toString()] ? 'Thu gọn ▲' : 'Xem ▼'}
+                                        </Typography>
                                     </Box>
-                                    {expandedHistory[item.menuItemId] && (
-                                        <Box sx={{ mt: 1 }}>
-                                            {item.history.map((h, hIdx) => (
+                                    {expandedHistory[group.menuItemId?.toString()] && (
+                                        <Box sx={{ mt: 1.5, pl: 1, borderLeft: '3px solid #e2e8f0' }}>
+                                            {group.history.map((h: any, hIdx: number) => (
                                                 <Box key={hIdx} sx={{ display: 'flex', justifyContent: 'space-between', mb: 0.5 }}>
-                                                    <Typography variant="caption" sx={{ color: "text.secondary" }}>
+                                                    <Typography variant="caption" sx={{ color: "text.secondary", fontWeight: 500, fontSize: '13px' }}>
                                                         Lúc {new Date(h.timestamp).toLocaleTimeString('vi-VN', { hour: '2-digit', minute: '2-digit' })}
+                                                        {h.note && <span style={{ color: '#d97706', fontStyle: 'italic' }}> - {h.note}</span>}
                                                     </Typography>
-                                                    <Typography variant="caption" sx={{ fontWeight: "bold", color: "black" }}>+ {h.quantity}</Typography>
+                                                    <Typography variant="caption" sx={{ fontWeight: 800, color: "#1e293b", fontSize: '13px' }}>
+                                                        + {h.quantity}
+                                                    </Typography>
                                                 </Box>
                                             ))}
                                         </Box>
@@ -296,74 +307,116 @@ const InvoiceDetailScreen: React.FC = () => {
                         </CardContent>
                     </Card>
                 ))}
+
+                <Box sx={{ mt: 5, mb: 2 }}>
+                    <Button
+                        variant="outlined"
+                        color="error"
+                        fullWidth
+                        sx={{ py: 1.5, borderRadius: 3, fontWeight: 'bold', borderWidth: 2, '&:hover': { borderWidth: 2 } }}
+                        onClick={() => setIsOpenConfirm(true)}
+                        disabled={pendingItems.length > 0 || isPaying}
+                    >
+                        {pendingItems.length > 0 ? "BÀN CHƯA LÊN ĐỦ ĐỒ - KHÔNG THỂ CHỐT" : "THU NGÂN CHỐT HÓA ĐƠN ĐỂ IN"}
+                    </Button>
+                </Box>
             </Box>
 
-            {/* DIALOG MENU GỌI THÊM MÓN */}
-            <Dialog
-                open={isMenuDialogOpen}
-                onClose={() => !isSaving && setIsMenuDialogOpen(false)}
-                fullScreen // Chuyển thành FullScreen Dialog trên Mobile cho dễ lướt menu
-            >
-                {/* Header Menu Dialog */}
+            <Dialog open={isMenuDialogOpen} onClose={() => !isOrdering && setIsMenuDialogOpen(false)} fullScreen>
                 <AppBar position="sticky" elevation={1}>
                     <Toolbar sx={{ backgroundColor: 'white', color: 'black' }}>
                         <Typography variant="h6" component="div" sx={{ flexGrow: 1, fontWeight: 'bold' }}>
                             MENU QUÁN
                         </Typography>
-                        <Button color="inherit" onClick={() => setIsMenuDialogOpen(false)} sx={{ fontWeight: 'bold' }}>ĐÓNG</Button>
+                        <Button color="inherit" onClick={() => setIsMenuDialogOpen(false)} sx={{ fontWeight: 'bold', color: '#ef4444' }}>ĐÓNG</Button>
                     </Toolbar>
                 </AppBar>
 
                 <DialogContent sx={{ p: 2, backgroundColor: '#f1f5f9', pb: 12 }}>
-                    {isLoadingMenu && <Loading message="Tải Menu..." />}
-                    {Object.values(menuItems || {}).map(item => {
-                        const qty = addedItemsDraft[item.id!] || 0;
+                    {loadingMenu && <Loading message="Tải Menu..." />}
+                    {menuList?.map((item: any) => {
+                        const draft = addedItemsDraft[item.id] || { quantity: 0, note: '' };
+                        const qty = draft.quantity;
                         return (
-                            <Card key={item.id} sx={{ mb: 1.5, borderRadius: 3 }}>
-                                <CardContent sx={{ p: 2, '&:last-child': { pb: 2 }, display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-                                    <Box>
-                                        <Typography sx={{ fontWeight: "bold", fontSize: "16px" }}>{item.name}</Typography>
-                                        <Typography sx={{ color: "text.secondary", fontSize: "14px" }}>{item.price.toLocaleString()} đ</Typography>
+                            <Card key={item.id} sx={{ mb: 1.5, borderRadius: 3, boxShadow: '0 2px 8px rgba(0,0,0,0.05)' }}>
+                                <CardContent sx={{ p: 2, '&:last-child': { pb: 2 } }}>
+                                    <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                                        <Box>
+                                            <Typography sx={{ fontWeight: 800, fontSize: "16px" }}>{item.name}</Typography>
+                                            <Typography sx={{ color: "text.secondary", fontSize: "14px", fontWeight: 600 }}>{formatPrice(item.price)}</Typography>
+                                        </Box>
+                                        <Box sx={{ display: "flex", alignItems: "center", gap: 1.5 }}>
+                                            <IconButton
+                                                sx={{ bgcolor: '#e2e8f0', color: 'black', borderRadius: 2 }}
+                                                onClick={() => handleAddQty(item.id, -1)} disabled={qty === 0}
+                                            >
+                                                <Typography sx={{ fontSize: 18, fontWeight: 'bold', lineHeight: 0.5 }}>-</Typography>
+                                            </IconButton>
+                                            <Typography sx={{ fontWeight: 800, width: 24, textAlign: 'center', fontSize: 18 }}>{qty}</Typography>
+                                            <IconButton
+                                                sx={{ bgcolor: '#2563eb', color: 'white', borderRadius: 2, '&:hover': { bgcolor: '#1d4ed8' } }}
+                                                onClick={() => handleAddQty(item.id, 1)}
+                                            >
+                                                <Typography sx={{ fontSize: 18, fontWeight: 'bold', lineHeight: 0.5 }}>+</Typography>
+                                            </IconButton>
+                                        </Box>
                                     </Box>
-                                    <Box sx={{ display: "flex", alignItems: "center", gap: 1.5 }}>
-                                        <Button
-                                            variant="contained" size="small"
-                                            sx={{ minWidth: 0, width: 32, height: 32, borderRadius: 2, backgroundColor: '#e2e8f0', color: 'black', boxShadow: 'none' }}
-                                            onClick={() => handleAddQty(item.id!, -1)} disabled={qty === 0}
-                                        >
-                                            -
-                                        </Button>
-                                        <Typography sx={{ fontWeight: "bold", width: 24, textAlign: 'center' }}>{qty}</Typography>
-                                        <Button
-                                            variant="contained" color="primary" size="small"
-                                            sx={{ minWidth: 0, width: 32, height: 32, borderRadius: 2, boxShadow: 'none' }}
-                                            onClick={() => handleAddQty(item.id!, 1)}
-                                        >
-                                            +
-                                        </Button>
-                                    </Box>
+
+                                    {qty > 0 && (
+                                        <Box sx={{ mt: 1.5 }}>
+                                            <TextField
+                                                size="small"
+                                                fullWidth
+                                                placeholder="Ghi chú (Ví dụ: không hành, bỏ đá...)"
+                                                value={draft.note}
+                                                onChange={(e) => handleNoteChange(item.id, e.target.value)}
+                                                sx={{ '& .MuiOutlinedInput-root': { borderRadius: 2, bgcolor: '#f8fafc' } }}
+                                            />
+                                        </Box>
+                                    )}
                                 </CardContent>
                             </Card>
                         )
                     })}
                 </DialogContent>
 
-                {/* BOTTOM BAR Ở BOTTOM CỦA MENU DIALOG */}
-                <Box sx={{ position: 'fixed', bottom: 0, left: 0, right: 0, bgcolor: 'white', p: 2, boxShadow: '0 -4px 12px rgba(0,0,0,0.05)', borderTop: '1px solid #e2e8f0' }}>
+                <Box sx={{ position: 'fixed', bottom: 0, left: 0, right: 0, bgcolor: 'white', p: 2, boxShadow: '0 -4px 12px rgba(0,0,0,0.05)', borderTop: '1px solid #e2e8f0', zIndex: 1200 }}>
                     <Box sx={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
                         <Box>
-                            <Typography sx={{ variant: "caption", color: "text.secondary", display: "block" }}>Thêm {draftTotalCount} món</Typography>
-                            <Typography sx={{ variant: "h6", color: "error.main", fontWeight: "bold" }}>{draftTotalAmount.toLocaleString()} đ</Typography>
+                            <Typography variant="caption" sx={{ color: "text.secondary", fontWeight: 600, display: "block" }}>Thêm {draftTotalCount} món</Typography>
+                            <Typography variant="h6" sx={{ color: "#ef4444", fontWeight: 900 }}>{formatPrice(draftTotalAmount)}</Typography>
                         </Box>
                         <Button
-                            variant="contained" size="large" sx={{ borderRadius: 3, fontWeight: 'bold', px: 4 }}
-                            onClick={() => saveOrder()} disabled={isSaving || draftTotalCount === 0}
+                            variant="contained" size="large" sx={{ borderRadius: 3, fontWeight: 800, px: 4 }}
+                            onClick={() => orderMutation()} disabled={isOrdering || draftTotalCount === 0}
                         >
-                            {isSaving ? "ĐANG LƯU..." : "XÁC NHẬN"}
+                            {isOrdering ? "ĐANG LƯU..." : "XÁC NHẬN GỌI"}
                         </Button>
                     </Box>
                 </Box>
             </Dialog>
+            <ConfirmDialog
+                open={isOpenConfirm}
+                onClose={() => setIsOpenConfirm(false)}
+                onConfirm={() => {
+                    payMutation();
+                    setIsOpenConfirm(false);
+                }}
+                title="Xác nhận thanh toán"
+                content='Chắc chắn thu tiền bàn này và kết thúc phiên?'
+                type="success"
+            />
+            <ConfirmDialog
+                open={isOpenCancel}
+                onClose={() => setIsOpenCancel(false)}
+                onConfirm={() => {
+                    cancelMutation(itemCancelId);
+                    setIsOpenCancel(false);
+                }}
+                title="Xác nhận"
+                content='Khách đổi ý, bạn chắc chắn muốn hủy món này?'
+                type="success"
+            />
         </Box>
     );
 };
